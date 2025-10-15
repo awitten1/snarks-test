@@ -18,5 +18,12 @@ add_subdirectory(libsnark)
 include_directories(src/include)
 
 find_package(GTest REQUIRED)
-add_executable(main main.cpp)
+
+option(ENABLE_TSAN "Enable TSAN" OFF)
+
+if (ENABLE_TSAN)
+  add_compile_options("-fsanitize=thread")
+  add_link_options("-fsanitize=thread")
+endif()
+add_executable(example1 src/examples/example1.cpp)
 
