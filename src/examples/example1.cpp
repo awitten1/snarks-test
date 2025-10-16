@@ -11,7 +11,7 @@
 
 
 thread_local std::mt19937 gen{std::random_device{}()};
-thread_local std::uniform_int_distribution<int> dist(0, 255);
+thread_local std::uniform_int_distribution<int> dist(0, 100);
 thread_local std::uniform_int_distribution<int> dist10000(0, 10000);
 
 std::string rand_string() {
@@ -24,16 +24,17 @@ std::string rand_string() {
   return ret;
 }
 
-template<typename DB, typename Txn>
-void RetryLoop(DB& db, Txn txncode, int retries = 1000, float backoff_factor = 1.5) {
+template<typename DB, typename TxnCode>
+void RetryLoop(DB& db, TxnCode txncode, int retries = 1000, float backoff_factor = 1.5) {
   auto sleep_time = std::chrono::milliseconds(5);
   for (int i = 0; i < retries; ++i) {
     try {
       auto txn = db.Begin();
       txncode(txn);
-    } catch(const TxnConflict&) {
-      std::this_thread::sleep_for(sleep_time);
+      txn.Commit();
+    } catch(const TxnConflict& e) {
       sleep_time *= backoff_factor;
+      std::this_thread::sleep_for(sleep_time);
     }
   }
 }
@@ -56,7 +57,7 @@ int main() {
       for (int j = 0; j < num_transactions; ++j) {
         RetryLoop(db, [](auto& txn) {
           int64_t key = dist(gen);
-          int num_keys = 3;
+          int num_keys = 1;
           for (int k = 0; k < num_keys; ++k) {
             std::string val1 = rand_string();
             txn.Put(key, val1);

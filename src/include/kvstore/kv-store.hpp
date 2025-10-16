@@ -87,7 +87,7 @@ public:
 
   class Txn {
     typename std::list<InternalTxn>::iterator it_;
-    bool committed = false;
+    bool committed_attempted_ = false;
 
   public:
     Txn(typename std::list<InternalTxn>::iterator it) : it_(it) {}
@@ -97,9 +97,11 @@ public:
     }
 
     void Commit() {
-      if (!committed) {
+      OnBlockExit obe([this]() {
+        committed_attempted_ = true;
+      });
+      if (!committed_attempted_) {
         it_->GetDB()->Commit(it_);
-        committed = true;
       }
     }
 
@@ -111,9 +113,6 @@ public:
       it_->Put(k, v);
     }
 
-    ~Txn() {
-      Commit();
-    }
   };
 
   Txn Begin() {
@@ -227,12 +226,6 @@ private:
       uint64_t finishtn = next_txn_id_.load();
       auto& txn_read_set = ongoing_txn->GetReadSet();
       bool valid = true;
-
-      OnBlockExit obe([&valid, ongoing_txn, this]() {
-        if (!valid) {
-          *ongoing_txn = InternalTxn{this, ReadTxnIdCounter()};
-        }
-      });
 
       for (auto i = starttn; i <= finishtn; ++i) {
         auto it = committed_txns_.find(i);
