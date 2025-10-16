@@ -26,8 +26,17 @@ if (ENABLE_TSAN)
   add_link_options("-fsanitize=thread")
 endif()
 
-if ()
 
+if (ENABLE_ASAN)
+  add_compile_options("-fsanitize=address")
+  add_link_options("-fsanitize=address")
+endif()
+
+option(BUILD_TESTS "Build unit tests" ON)
+
+if (BUILD_TESTS)
+  add_executable(tests src/tests/tests.cpp)
+  target_link_libraries(tests PUBLIC GTest::gtest_main)
 endif()
 
 add_executable(example1 src/examples/example1.cpp)

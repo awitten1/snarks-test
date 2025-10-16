@@ -45,17 +45,17 @@ int main() {
         auto txn = db.Begin();
         int64_t key = dist(gen);
 
-        std::this_thread::sleep_for(std::chrono::microseconds(dist(gen) % 50));
+        int num_keys = 15;
+        for (int k = 0; k < num_keys; ++k) {
+          std::this_thread::sleep_for(std::chrono::microseconds(dist(gen) % 50));
+          std::string val1 = rand_string();
+          txn.Put(key, val1);
+          const auto [val, found] = txn.Get(key);
+          assert(found);
+          assert(val == val1);
+        }
 
-        std::string val1 = rand_string();
-        txn.Put(key, val1);
-        const auto [val, found] = txn.Get(key);
-        assert(found);
-        assert(val == val1);
-
-        key = dist(gen);
-        val1 = rand_string();
-        txn.Put(key, val1);
+        txn.Commit();
 
       }
     });
