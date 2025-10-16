@@ -15,9 +15,13 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
 endif()
 
 add_subdirectory(libsnark)
-include_directories(src/include)
 
 find_package(GTest REQUIRED)
+find_package(TBB REQUIRED)
+
+include_directories(src/include)
+include_directories(third_party/parallel-hashmap)
+link_libraries(TBB::tbb)
 
 option(ENABLE_TSAN "Enable TSAN" OFF)
 

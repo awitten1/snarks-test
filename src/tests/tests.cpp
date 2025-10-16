@@ -16,6 +16,7 @@ TEST(basic, basic1) {
     auto x = t.Get(3);
     EXPECT_TRUE(x.second);
     EXPECT_EQ(x.first, "asdf");
+    t.Commit();
   }
 }
 
@@ -35,4 +36,15 @@ TEST(basic, conflict) {
     got_exception = true;
   }
   EXPECT_TRUE(got_exception);
+}
+
+TEST(basic, noconflict) {
+  DB<int, std::string> db;
+  using Txn = DB<int, std::string>::Txn;
+  Txn t1 = db.Begin();
+  Txn t2 = db.Begin();
+  t1.Put(3, "asdf");
+  t2.Get(4);
+  t1.Commit();
+  t2.Commit();
 }

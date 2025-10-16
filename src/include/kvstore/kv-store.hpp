@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
+#include <oneapi/tbb/concurrent_hash_map.h>
+
 
 #include "common/common.hpp"
 
@@ -119,9 +121,8 @@ public:
 
 private:
 
-  // The actual data.  Get shared lock for reads, exclusive for writes.
-  std::shared_mutex data_mutex_;
-  std::unordered_map<Key, Value> data_;
+  // The actual data.
+  tbb::concurrent_hash_map<Key, Value> data_;
 
   // Transactions that have committed but must be preserved
   // in order to validate ongoing transactions.
@@ -142,9 +143,10 @@ private:
 
   std::pair<Value, bool> Get(const Key& k) {
     {
-      std::shared_lock<std::shared_mutex> sl(data_mutex_);
-      if (data_.find(k) != data_.end()) {
-        return {data_[k], true};
+      typename decltype(data_)::const_accessor a;
+      bool found = data_.find(a, k);
+      if (found) {
+        return {a->second, true};
       }
       return {Value{}, false};
     }
@@ -153,8 +155,9 @@ private:
 
   void WritePhase(std::lock_guard<std::mutex>& validation_mutex_, typename std::list<InternalTxn>::iterator t) {
     for (const auto& [k, v] : t->GetWriteSet()) {
-      std::unique_lock<std::shared_mutex> lg(data_mutex_);
-      data_[k] = v;
+      typename decltype(data_)::accessor a;
+      data_.insert(a, k);
+      a->second = v;
     }
   }
 
@@ -190,7 +193,7 @@ private:
         }
       }
       WritePhase(lg, ongoing_txn);
-      ongoing_txn->SetTxnId(++next_txn_id_);
+      ongoing_txn->SetTxnId(next_txn_id_++);
       {
         std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
         uint64_t txn_id = ongoing_txn->GetTxnId();
