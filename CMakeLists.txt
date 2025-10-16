@@ -25,5 +25,10 @@ if (ENABLE_TSAN)
   add_compile_options("-fsanitize=thread")
   add_link_options("-fsanitize=thread")
 endif()
+
+if ()
+
+endif()
+
 add_executable(example1 src/examples/example1.cpp)
 
