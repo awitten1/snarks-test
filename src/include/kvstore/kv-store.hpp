@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <list>
 #include <map>
@@ -9,10 +11,12 @@
 #include <set>
 #include <shared_mutex>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <oneapi/tbb/concurrent_hash_map.h>
-
+#include <algorithm>
+#include <condition_variable>
 
 #include "common/common.hpp"
 
@@ -36,7 +40,7 @@ class DB {
 
   public:
 
-    InternalTxn(DB* db) : db_(db), starttn_(db_->ReadTxnIdCounter()) {}
+    InternalTxn(DB* db, uint64_t starttn) : db_(db), starttn_(starttn) {}
 
     std::pair<Value, bool> Get(const Key& k) {
       read_set.insert(k);
@@ -53,6 +57,10 @@ class DB {
 
     const std::set<Key>& GetReadSet() {
       return read_set;
+    }
+
+    uint64_t GetStartTn() {
+      return starttn_;
     }
 
     const std::unordered_map<Key, Value>& GetWriteSet() const {
@@ -73,9 +81,6 @@ class DB {
       copies[k] = v;
     }
 
-    uint64_t GetStartTn() {
-      return starttn_;
-    }
   };
 
 public:
@@ -113,11 +118,56 @@ public:
 
   Txn Begin() {
     std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
-    ongoing_txns_.push_back(InternalTxn{this});
+    ongoing_txns_.push_back(InternalTxn{this, ReadTxnIdCounter()});
     auto end = ongoing_txns_.end();
     end--;
     return Txn{end};
   }
+
+  ~DB() {
+    {
+      std::unique_lock<std::mutex> lg(shutdown_mutex_);
+      shutdown_ = true;
+      cv_.notify_one();
+    }
+    gc_thread_.join();
+  }
+
+  DB() {
+    gc_thread_ = std::thread([this]() {
+      for (;;) {
+        {
+          std::unique_lock<std::mutex> lg(shutdown_mutex_);
+          cv_.wait_for(lg, std::chrono::seconds(1), [this]() {
+            return shutdown_;
+          });
+          if (shutdown_) {
+            return;
+          }
+        }
+
+        uint64_t min_start_tn = -1;
+        {
+          std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
+          for (auto& itxn : ongoing_txns_) {
+            if (itxn.GetStartTn() < min_start_tn) {
+              min_start_tn = itxn.GetStartTn();
+            }
+          }
+        }
+
+        {
+          std::lock_guard<std::mutex> lg(validation_mutex_);
+          for (auto it = committed_txns_.begin(); it != committed_txns_.end(); ++it) {
+            if (it->first >= min_start_tn) {
+              break;
+            }
+            committed_txns_.erase(it);
+          }
+        }
+      }
+    });
+}
 
 private:
 
@@ -131,11 +181,16 @@ private:
   // The next txn id to dispense.
   std::atomic<uint64_t> next_txn_id_ = 0;
 
+  // background thread to cleanup committed_txns_ map.
+  std::thread gc_thread_;
+
   // Outstanding transactions.
   std::mutex ongoing_txns_mutex_;
   std::list<InternalTxn> ongoing_txns_;
 
-  friend InternalTxn;
+  std::mutex shutdown_mutex_;
+  std::condition_variable cv_;
+  bool shutdown_ = false;
 
   uint64_t ReadTxnIdCounter() {
     return next_txn_id_;
@@ -175,7 +230,7 @@ private:
 
       OnBlockExit obe([&valid, ongoing_txn, this]() {
         if (!valid) {
-          *ongoing_txn = InternalTxn{this};
+          *ongoing_txn = InternalTxn{this, ReadTxnIdCounter()};
         }
       });
 

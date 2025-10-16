@@ -24,6 +24,20 @@ std::string rand_string() {
   return ret;
 }
 
+template<typename DB, typename Txn>
+void RetryLoop(DB& db, Txn txncode, int retries = 1000, float backoff_factor = 1.5) {
+  auto sleep_time = std::chrono::milliseconds(5);
+  for (int i = 0; i < retries; ++i) {
+    try {
+      auto txn = db.Begin();
+      txncode(txn);
+    } catch(const TxnConflict&) {
+      std::this_thread::sleep_for(sleep_time);
+      sleep_time *= backoff_factor;
+    }
+  }
+}
+
 int main() {
   DB<int64_t, std::string> db;
 
@@ -34,29 +48,23 @@ int main() {
     }
   });
 
-  int num_threads = 40;
+  int num_threads = 5;
 
   for (int i = 0; i < num_threads; ++i) {
     std::thread t([&db]() {
       int num_transactions = 10000;
       for (int j = 0; j < num_transactions; ++j) {
-        std::this_thread::sleep_for(std::chrono::microseconds(dist(gen) % 50));
-
-        auto txn = db.Begin();
-        int64_t key = dist(gen);
-
-        int num_keys = 15;
-        for (int k = 0; k < num_keys; ++k) {
-          std::this_thread::sleep_for(std::chrono::microseconds(dist(gen) % 50));
-          std::string val1 = rand_string();
-          txn.Put(key, val1);
-          const auto [val, found] = txn.Get(key);
-          assert(found);
-          assert(val == val1);
-        }
-
-        txn.Commit();
-
+        RetryLoop(db, [](auto& txn) {
+          int64_t key = dist(gen);
+          int num_keys = 3;
+          for (int k = 0; k < num_keys; ++k) {
+            std::string val1 = rand_string();
+            txn.Put(key, val1);
+            const auto [val, found] = txn.Get(key);
+            assert(found);
+            assert(val == val1);
+          }
+        });
       }
     });
     threads.push_back(std::move(t));
