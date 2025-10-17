@@ -190,8 +190,8 @@ public:
         }
 
         size_t num_keys = data_.size();
-        std::cerr << '{' << " vmsize: " << metrics.vmsize << ","
-          << " rssanon: " << metrics.rssanon << ", committed_txns_size: " << map_size
+        std::cerr << '{' << " vmsize_gb: " << metrics.vmsize << " ,"
+          << " rssanon_gb: " << metrics.rssanon << "  , committed_txns_size: " << map_size
           << ", num_keys: " << num_keys << " }" << std::endl;
       }
     });
