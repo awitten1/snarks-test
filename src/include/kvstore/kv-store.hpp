@@ -165,6 +165,7 @@ public:
               break;
             }
             it = committed_txns_.erase(it);
+            ++pruned_txns_;
           }
         }
       }
@@ -189,10 +190,18 @@ public:
           map_size = committed_txns_.size();
         }
 
+        size_t num_ongoing_txns;
+        {
+          std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
+          num_ongoing_txns = ongoing_txns_.size();
+        }
+
         size_t num_keys = data_.size();
-        std::cerr << '{' << " vmsize_gb: " << metrics.vmsize << " ,"
-          << " rssanon_gb: " << metrics.rssanon << "  , committed_txns_size: " << map_size
-          << ", num_keys: " << num_keys << " }" << std::endl;
+        std::cerr << '{' << " vmsize_gb: " << metrics.vmsize
+          << ", rssanon_gb: " << metrics.rssanon << ", committed_txns_size: " << map_size
+          << ", num_keys: " << num_keys << ", pruned_txns: " << pruned_txns_
+          << ", num_ongoing_txns: " << num_ongoing_txns
+          << ", committed_txn_count: " << committed_txn_count_.load() << " }" << std::endl;
       }
     });
   }
@@ -214,6 +223,8 @@ private:
 
   // background thread to log metrics.
   std::thread stats_thread_;
+  std::atomic<uint64_t> pruned_txns_ = 0;
+  std::atomic<uint64_t> committed_txn_count_ = 0;
 
   // Outstanding transactions.
   std::mutex ongoing_txns_mutex_;
@@ -249,6 +260,7 @@ private:
 
   void Commit(typename std::list<InternalTxn>::iterator ongoing_txn) {
     Validate(ongoing_txn);
+    ++committed_txn_count_;
   }
 
   void Validate(typename std::list<InternalTxn>::iterator ongoing_txn) {
@@ -268,6 +280,10 @@ private:
         for (auto&& x : other_txn.GetWriteSet()) {
           if (txn_read_set.find(x.first) != txn_read_set.end()) {
             valid = false;
+            {
+              std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
+              ongoing_txns_.erase(ongoing_txn);
+            }
             throw TxnConflict{"txn validation failure"};
           }
         }
