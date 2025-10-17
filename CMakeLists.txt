@@ -36,6 +36,11 @@ if (ENABLE_ASAN)
   add_link_options("-fsanitize=address")
 endif()
 
+if (ENABLE_UBSAN)
+  add_compile_options("-fsanitize=undefined")
+  add_link_options("-fsanitize=undefined")
+endif()
+
 option(BUILD_TESTS "Build unit tests" ON)
 
 if (BUILD_TESTS)

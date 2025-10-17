@@ -9,10 +9,12 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 #include <oneapi/tbb/concurrent_hash_map.h>
@@ -29,7 +31,7 @@ public:
 
 namespace DB {
 template<typename DB, typename TxnCode>
-void RetryLoop(DB& db, TxnCode txncode, int retries = 10, float backoff_factor = 1.5) {
+void RetryLoop(DB& db, TxnCode txncode, int retries = 100, float backoff_factor = 1.5) {
   auto sleep_time = std::chrono::milliseconds(5);
   for (int i = 0; i < retries; ++i) {
     try {
@@ -38,6 +40,9 @@ void RetryLoop(DB& db, TxnCode txncode, int retries = 10, float backoff_factor =
       txn.Commit();
       break;
     } catch(const TxnConflict& e) {
+      if (i == retries - 1) {
+        throw;
+      }
       sleep_time *= backoff_factor;
       std::this_thread::sleep_for(sleep_time);
     }
@@ -55,13 +60,25 @@ class DB {
     uint64_t txn_id_ = -1;
     std::unordered_map<Key, Value> copies;
     std::set<Key> read_set;
-    uint64_t starttn_;
+    std::atomic<uint64_t> starttn_ = -1;
 
   public:
 
-    InternalTxn(DB* db, uint64_t starttn) : db_(db), starttn_(starttn) {}
+    InternalTxn(const InternalTxn& other) :
+      db_(other.db_), txn_id_(other.txn_id_),
+      copies(other.copies), read_set(other.read_set), starttn_(other.starttn_.load()) {}
+
+    InternalTxn(InternalTxn&& other) :
+      db_(other.db_), txn_id_(other.txn_id_),
+      copies(std::move(other.copies)),
+      read_set(std::move(other.read_set)), starttn_(other.starttn_.load()) {}
+
+    InternalTxn(DB* db) : db_(db) {}
 
     std::pair<Value, bool> Get(const Key& k) {
+      if (starttn_ == -1) {
+        starttn_ = db_->ReadTxnIdCounter();
+      }
       read_set.insert(k);
       auto it = copies.find(k);
       if (it != copies.end()) {
@@ -79,7 +96,7 @@ class DB {
     }
 
     uint64_t GetStartTn() {
-      return starttn_;
+      return starttn_.load();
     }
 
     const std::unordered_map<Key, Value>& GetWriteSet() const {
@@ -97,6 +114,9 @@ class DB {
 
 
     void Put(const Key& k, const Value& v) {
+      if (starttn_ == -1) {
+        starttn_ = db_->ReadTxnIdCounter();
+      }
       copies[k] = v;
     }
 
@@ -105,42 +125,41 @@ class DB {
 public:
 
   class Txn {
-    typename std::list<InternalTxn>::iterator it_;
+    std::optional<typename std::list<InternalTxn>::iterator> it_;
     bool committed_attempted_ = false;
+    DB<Key, Value>* db_;
 
   public:
-    Txn(typename std::list<InternalTxn>::iterator it) : it_(it) {}
+
+    Txn(DB<Key, Value>* db) : db_(db) {}
 
     std::pair<Value, bool> Get(const Key& k) {
-      return it_->Get(k);
+      if (!it_.has_value()) {
+        it_.emplace(db_->StartTxn());
+      }
+      return (*it_)->Get(k);
     }
 
     void Commit() {
+      if (!it_.has_value()) {
+        return;
+      }
       OnBlockExit obe([this]() {
         committed_attempted_ = true;
       });
       if (!committed_attempted_) {
-        it_->GetDB()->Commit(it_);
+        (*it_)->GetDB()->Commit(*it_);
       }
     }
 
-    void SetTxnId(uint64_t txn_id) {
-      it_->SetTxnId(txn_id);
-    }
-
     void Put(const Key& k, const Value& v) {
-      it_->Put(k, v);
+      if (!it_.has_value()) {
+        it_.emplace(db_->StartTxn());
+      }
+      (*it_)->Put(k, v);
     }
 
   };
-
-  Txn Begin() {
-    std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
-    ongoing_txns_.push_back(InternalTxn{this, ReadTxnIdCounter()});
-    auto end = ongoing_txns_.end();
-    end--;
-    return Txn{end};
-  }
 
   ~DB() {
     {
@@ -150,6 +169,17 @@ public:
     }
     gc_thread_.join();
     stats_thread_.join();
+  }
+
+  Txn Begin() {
+    return Txn{this};
+  }
+
+  void DumpValues() {
+    for (auto it = data_.begin(); it != data_.end(); ++it) {
+      std::cout << '(' << it->first << ", " << it->second << ')';
+    }
+    std::cout << std::endl << std::endl;
   }
 
   DB() {
@@ -260,6 +290,15 @@ private:
     return next_txn_id_;
   }
 
+  friend Txn;
+  typename std::list<InternalTxn>::iterator StartTxn() {
+    std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
+    ongoing_txns_.push_back(InternalTxn{this});
+    auto end = ongoing_txns_.end();
+    end--;
+    return end;
+  }
+
   std::pair<Value, bool> Get(const Key& k) {
     {
       typename decltype(data_)::const_accessor a;
@@ -270,7 +309,6 @@ private:
       return {Value{}, false};
     }
   }
-
 
   void WritePhase(std::lock_guard<std::mutex>& validation_mutex_, typename std::list<InternalTxn>::iterator t) {
     for (const auto& [k, v] : t->GetWriteSet()) {
@@ -289,6 +327,9 @@ private:
     {
       std::lock_guard<std::mutex> lg(validation_mutex_);
       uint64_t starttn = ongoing_txn->GetStartTn();
+      if (starttn == -1) {
+        return;
+      }
       uint64_t finishtn = next_txn_id_.load();
       auto& txn_read_set = ongoing_txn->GetReadSet();
       bool valid = true;
