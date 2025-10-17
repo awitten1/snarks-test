@@ -63,7 +63,7 @@ int main() {
       for (int j = 0; j < num_transactions; ++j) {
         RetryLoop(db, [](auto& txn) {
           int64_t key = dist(gen);
-          int num_keys = 1;
+          int num_keys = 100;
           for (int k = 0; k < num_keys; ++k) {
             std::string val1 = rand_string();
             txn.Put(key, val1);
