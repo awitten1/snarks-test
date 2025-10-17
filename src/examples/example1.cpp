@@ -34,8 +34,10 @@ void RetryLoop(DB& db, TxnCode txncode, int retries = 10, float backoff_factor =
       auto txn = db.Begin();
       txncode(txn);
       txn.Commit();
+      ++commits;
       break;
     } catch(const TxnConflict& e) {
+      std::cout << "conflict" << std::endl;
       sleep_time *= backoff_factor;
       std::this_thread::sleep_for(sleep_time);
     }
@@ -50,13 +52,14 @@ int main() {
     for (auto& thread : threads) {
       thread.join();
     }
+    std::cout << "committed " << commits << " txns" << std::endl;
   });
 
   int num_threads = 5;
 
   for (int i = 0; i < num_threads; ++i) {
     std::thread t([&db]() {
-      int num_transactions = 10000;
+      int num_transactions = 1000;
       for (int j = 0; j < num_transactions; ++j) {
         RetryLoop(db, [](auto& txn) {
           int64_t key = dist(gen);
@@ -73,5 +76,7 @@ int main() {
     });
     threads.push_back(std::move(t));
   }
+
+  return 0;
 
 }

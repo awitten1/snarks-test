@@ -172,18 +172,8 @@ public:
     });
 
     stats_thread_ = std::thread([this]() {
-      for (;;) {
-        {
-          std::unique_lock<std::mutex> lg(shutdown_mutex_);
-          cv_.wait_for(lg, std::chrono::seconds(1), [this]() {
-            return shutdown_;
-          });
-          if (shutdown_) {
-            return;
-          }
-        }
+      auto log_stats = [=]() {
         ProcMetrics metrics = read_proc_pid_status();
-
         size_t map_size;
         {
           std::lock_guard<std::mutex> lg(validation_mutex_);
@@ -201,7 +191,21 @@ public:
           << ", rssanon_gb: " << metrics.rssanon << ", committed_txns_size: " << map_size
           << ", num_keys: " << num_keys << ", pruned_txns: " << pruned_txns_
           << ", num_ongoing_txns: " << num_ongoing_txns
+          << ", txn_aborts: " << txn_aborts_.load()
           << ", committed_txn_count: " << committed_txn_count_.load() << " }" << std::endl;
+      };
+      for (;;) {
+        {
+          std::unique_lock<std::mutex> lg(shutdown_mutex_);
+          cv_.wait_for(lg, std::chrono::seconds(1), [this]() {
+            return shutdown_;
+          });
+          log_stats();
+          if (shutdown_) {
+            return;
+          }
+        }
+
       }
     });
   }
@@ -225,6 +229,7 @@ private:
   std::thread stats_thread_;
   std::atomic<uint64_t> pruned_txns_ = 0;
   std::atomic<uint64_t> committed_txn_count_ = 0;
+  std::atomic<uint64_t> txn_aborts_ = 0;
 
   // Outstanding transactions.
   std::mutex ongoing_txns_mutex_;
@@ -284,6 +289,7 @@ private:
               std::lock_guard<std::mutex> lg(ongoing_txns_mutex_);
               ongoing_txns_.erase(ongoing_txn);
             }
+            ++txn_aborts_;
             throw TxnConflict{"txn validation failure"};
           }
         }
