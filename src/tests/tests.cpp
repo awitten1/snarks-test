@@ -1,10 +1,14 @@
+#include <chrono>
+#include <condition_variable>
 #include <gtest/gtest.h>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include "kvstore/kv-store.hpp"
 
 TEST(basic, basic1) {
-  DB<int, std::string> db;
-  using Txn = DB<int, std::string>::Txn;
+  DB::DB<int, std::string> db;
+  using Txn = DB::DB<int, std::string>::Txn;
   {
     Txn t = db.Begin();
     t.Put(3, "asdf");
@@ -23,8 +27,8 @@ TEST(basic, basic1) {
 }
 
 TEST(basic, conflict) {
-  DB<int, std::string> db;
-  using Txn = DB<int, std::string>::Txn;
+  DB::DB<int, std::string> db;
+  using Txn = DB::DB<int, std::string>::Txn;
   Txn t1 = db.Begin();
   Txn t2 = db.Begin();
   t1.Put(3, "asdf");
@@ -41,8 +45,8 @@ TEST(basic, conflict) {
 }
 
 TEST(basic, noconflict) {
-  DB<int, std::string> db;
-  using Txn = DB<int, std::string>::Txn;
+  DB::DB<int, std::string> db;
+  using Txn = DB::DB<int, std::string>::Txn;
   Txn t1 = db.Begin();
   Txn t2 = db.Begin();
   t1.Put(3, "asdf");
@@ -58,7 +62,7 @@ TEST(basic, noconflict) {
 class InvariantTests : public testing::Test {
 protected:
   InvariantTests() {
-    db_.reset(new DB<int, int>{});
+    db_.reset(new DB::DB<int, int>{});
     auto txn = db_->Begin();
     long total_money = 0;
     for (int i = 0; i < num_accounts_; ++i) {
@@ -74,23 +78,83 @@ protected:
   long GetTotalMoney() {
     auto txn = db_->Begin();
     long total_money = 0;
-    for (int acc : accounts_) {
-      auto [acc_money, found] = txn.Get(acc);
-      EXPECT_TRUE(found);
-      total_money += acc_money;
-    }
-    txn.Commit();
+
+    DB::RetryLoop(*db_, [&](auto& txn) {
+      long ltotal_money = 0;
+      for (int acc : accounts_) {
+        auto [acc_money, found] = txn.Get(acc);
+        EXPECT_TRUE(found);
+        ltotal_money += acc_money;
+      }
+      total_money = ltotal_money;
+    });
+
     return total_money;
   }
 
-  std::unique_ptr<DB<int, int>> db_;
+  std::unique_ptr<DB::DB<int, int>> db_;
   std::vector<int> accounts_;
   int num_accounts_ = 10;
+
+  // const after initialization.
   int total_money_;
 };
 
 TEST_F(InvariantTests, CheckTotalMoney) {
   long total_money = GetTotalMoney();
   EXPECT_EQ(total_money, total_money_);
+}
+
+TEST_F(InvariantTests, CheckTotalMoneyMultipleThreads) {
+  bool shutdown = false;
+  std::mutex m;
+  std::condition_variable cv;
+
+  std::thread t([&, this]() {
+    for (;;) {
+      EXPECT_EQ(GetTotalMoney(), total_money_);
+      {
+        std::unique_lock<std::mutex> lg(m);
+        cv.wait_for(lg, std::chrono::milliseconds(1), [&]() {
+          return shutdown;
+        });
+        if (shutdown) {
+          return;
+        }
+      }
+    }
+  });
+
+  auto get_acc = [this]() -> std::pair<int, int> {
+    int acc1 = accounts_[rand() % num_accounts_];
+    int acc2 = acc1;
+    for (;acc2 == acc1;acc2 = accounts_[rand() % num_accounts_]) {}
+    return {acc1, acc2};
+  };
+
+  sleep(10);
+
+  {
+    std::unique_lock<std::mutex> lg(m);
+    shutdown = true;
+    cv.notify_all();
+  }
+  t.join();
+
+  // for (int i = 0; i < 10000; ++i) {
+  //   auto [acc1, acc2] = get_acc();
+
+  //   auto txn = db_->Begin();
+  //   auto [amt1, found1] = txn.Get(acc1);
+  //   auto [amt2, found2] = txn.Get(acc1);
+
+  //   EXPECT_TRUE(found1);
+  //   EXPECT_TRUE(found2);
+
+  //   int amt_to_deduct = rand() % amt1;
+  //   txn.Put(acc1, amt1 - amt_to_deduct);
+  //   txn.Put(acc2, amt2 + amt_to_deduct);
+  //   txn.Commit();
+  // }
 }
 

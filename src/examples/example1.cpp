@@ -26,26 +26,8 @@ std::string rand_string() {
 
 std::atomic<uint64_t> commits = 0;
 
-template<typename DB, typename TxnCode>
-void RetryLoop(DB& db, TxnCode txncode, int retries = 10, float backoff_factor = 1.5) {
-  auto sleep_time = std::chrono::milliseconds(5);
-  for (int i = 0; i < retries; ++i) {
-    try {
-      auto txn = db.Begin();
-      txncode(txn);
-      txn.Commit();
-      ++commits;
-      break;
-    } catch(const TxnConflict& e) {
-      std::cout << "conflict" << std::endl;
-      sleep_time *= backoff_factor;
-      std::this_thread::sleep_for(sleep_time);
-    }
-  }
-}
-
 int main() {
-  DB<int64_t, std::string> db;
+  DB::DB<int64_t, std::string> db;
 
   std::vector<std::thread> threads;
   OnBlockExit obe([&threads]() {
@@ -61,7 +43,7 @@ int main() {
     std::thread t([&db]() {
       int num_transactions = 1000;
       for (int j = 0; j < num_transactions; ++j) {
-        RetryLoop(db, [](auto& txn) {
+        DB::RetryLoop(db, [](auto& txn) {
           int64_t key = dist(gen);
           int num_keys = 100;
           for (int k = 0; k < num_keys; ++k) {

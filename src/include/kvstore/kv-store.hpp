@@ -27,6 +27,23 @@ public:
    using std::runtime_error::runtime_error;
 };
 
+namespace DB {
+template<typename DB, typename TxnCode>
+void RetryLoop(DB& db, TxnCode txncode, int retries = 10, float backoff_factor = 1.5) {
+  auto sleep_time = std::chrono::milliseconds(5);
+  for (int i = 0; i < retries; ++i) {
+    try {
+      auto txn = db.Begin();
+      txncode(txn);
+      txn.Commit();
+      break;
+    } catch(const TxnConflict& e) {
+      sleep_time *= backoff_factor;
+      std::this_thread::sleep_for(sleep_time);
+    }
+  }
+}
+
 template<typename Key, typename Value>
 class DB {
 
@@ -307,3 +324,5 @@ private:
   }
 
 };
+
+}
