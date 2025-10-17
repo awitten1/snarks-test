@@ -11,7 +11,7 @@
 
 
 thread_local std::mt19937 gen{std::random_device{}()};
-thread_local std::uniform_int_distribution<int> dist(0, 100);
+thread_local std::uniform_int_distribution<int> dist(0, 100000);
 thread_local std::uniform_int_distribution<int> dist10000(0, 10000);
 
 std::string rand_string() {

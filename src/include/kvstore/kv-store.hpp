@@ -5,6 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 #include <list>
 #include <map>
 #include <mutex>
@@ -19,6 +20,7 @@
 #include <condition_variable>
 
 #include "common/common.hpp"
+#include "common/proc.hpp"
 
 class TxnConflict : public std::runtime_error {
 public:
@@ -127,9 +129,10 @@ public:
     {
       std::unique_lock<std::mutex> lg(shutdown_mutex_);
       shutdown_ = true;
-      cv_.notify_one();
+      cv_.notify_all();
     }
     gc_thread_.join();
+    stats_thread_.join();
   }
 
   DB() {
@@ -137,7 +140,7 @@ public:
       for (;;) {
         {
           std::unique_lock<std::mutex> lg(shutdown_mutex_);
-          cv_.wait_for(lg, std::chrono::seconds(1), [this]() {
+          cv_.wait_for(lg, std::chrono::milliseconds(100), [this]() {
             return shutdown_;
           });
           if (shutdown_) {
@@ -157,16 +160,42 @@ public:
 
         {
           std::lock_guard<std::mutex> lg(validation_mutex_);
-          for (auto it = committed_txns_.begin(); it != committed_txns_.end(); ++it) {
+          for (auto it = committed_txns_.begin(); it != committed_txns_.end();) {
             if (it->first >= min_start_tn) {
               break;
             }
-            committed_txns_.erase(it);
+            it = committed_txns_.erase(it);
           }
         }
       }
     });
-}
+
+    stats_thread_ = std::thread([this]() {
+      for (;;) {
+        {
+          std::unique_lock<std::mutex> lg(shutdown_mutex_);
+          cv_.wait_for(lg, std::chrono::seconds(1), [this]() {
+            return shutdown_;
+          });
+          if (shutdown_) {
+            return;
+          }
+        }
+        ProcMetrics metrics = read_proc_pid_status();
+
+        size_t map_size;
+        {
+          std::lock_guard<std::mutex> lg(validation_mutex_);
+          map_size = committed_txns_.size();
+        }
+
+        size_t num_keys = data_.size();
+        std::cerr << '{' << " vmsize: " << metrics.vmsize << ","
+          << " rssanon: " << metrics.rssanon << ", committed_txns_size: " << map_size
+          << ", num_keys: " << num_keys << " }" << std::endl;
+      }
+    });
+  }
 
 private:
 
@@ -182,6 +211,9 @@ private:
 
   // background thread to cleanup committed_txns_ map.
   std::thread gc_thread_;
+
+  // background thread to log metrics.
+  std::thread stats_thread_;
 
   // Outstanding transactions.
   std::mutex ongoing_txns_mutex_;
